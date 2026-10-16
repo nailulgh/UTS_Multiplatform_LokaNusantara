@@ -3,12 +3,13 @@ import 'package:flutter/services.dart';
 import 'views/home_page.dart';
 import 'views/category_page.dart';
 import 'views/detail_page.dart';
+import 'views/saved_page.dart';
+import 'views/profile_page.dart';
 
-/// [Modul 01 - Struktur Aplikasi Flutter]: Entry point program Flutter
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Mengatur status bar transparan untuk tampilan immersive (Modul 08 & 10)
+  // Mengatur tampilan status bar transparan untuk antarmuka modern
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
@@ -19,7 +20,6 @@ void main() {
   runApp(const LokaNusantaraApp());
 }
 
-/// [Modul 01 & 07 - MaterialApp & Named Routes Configuration]:
 /// Root widget yang mengatur konfigurasi tema global dan peta routing aplikasi.
 class LokaNusantaraApp extends StatelessWidget {
   const LokaNusantaraApp({super.key});
@@ -27,10 +27,8 @@ class LokaNusantaraApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Wisata & Kuliner Lokal',
+      title: 'LokaNusantara - Wisata & Kuliner Lokal',
       debugShowCheckedModeBanner: false,
-
-      // [Stitch Design System Tokens]
       theme: ThemeData(
         useMaterial3: true,
         primaryColor: const Color(0xFF0D9488), // Emerald Teal
@@ -47,16 +45,15 @@ class LokaNusantaraApp extends StatelessWidget {
           elevation: 0,
         ),
       ),
-
-      // [Modul 07 & 08 - Sistem Named Routes]:
-      // initialRoute menentukan rute awal yang dibuka (HomePage)
       initialRoute: HomePage.routeName,
-
-      // routes mendefinisikan kamus navigasi antar halaman
       routes: {
         HomePage.routeName: (context) => const HomePage(),
-        CategoryPage.routeName: (context) => const CategoryPage(),
+        CategoryPage.routeName: (context) =>
+            const CategoryPage(isStandalone: true),
         DetailPage.routeName: (context) => const DetailPage(),
+        SavedPage.routeName: (context) => const SavedPage(isStandalone: true),
+        ProfilePage.routeName: (context) =>
+            const ProfilePage(isStandalone: true),
       },
     );
   }

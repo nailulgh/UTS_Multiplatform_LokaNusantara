@@ -2,11 +2,12 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/destination_model.dart';
+import '../models/itinerary_note_model.dart';
+import '../services/persistence_service.dart';
+import 'category_page.dart';
+import 'saved_page.dart';
+import 'profile_page.dart';
 
-/// [Modul 01 - Pengenalan Flutter & Struktur Widget]
-/// [Modul 09 - StatefulWidget]: HomePage menggunakan StatefulWidget karena memiliki
-/// variabel state yang berubah secara dinamis berdasarkan interaksi pengguna:
-/// pencarian teks, filter kategori aktif, data destinasi lokal, dan status bookmark.
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -17,7 +18,6 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  // [Design System Tokens - Berdasarkan Stitch Design System]
   static const Color primaryTeal = Color(0xFF0D9488);
   static const Color primaryDark = Color(0xFF0F766E);
   static const Color primaryLight = Color(0xFFCCFBF1);
@@ -29,18 +29,18 @@ class _HomePageState extends State<HomePage> {
   static const Color textMuted = Color(0xFF64748B);
   static const Color favoriteRed = Color(0xFFEF4444);
 
-  // [Modul 09 - State Management]: Variabel state
   List<DestinationModel> _allDestinations = [];
   List<DestinationModel> _filteredDestinations = [];
+  Map<String, ItineraryNoteModel> _localNotes = {};
   bool _isLoading = true;
   String _selectedCategory = 'Semua';
   final TextEditingController _searchController = TextEditingController();
 
-  // [Modul 12 - Akses Lokasi dengan GPS]: Simulasi info geolokasi perangkat
   String _currentKecamatan = 'Klojen';
   String _currentKota = 'Kota Malang';
+  double _userLat = -7.9826;
+  double _userLng = 112.6308;
 
-  // Daftar kategori sesuai topik perancangan
   final List<String> _categories = [
     'Semua',
     'Wisata Alam',
@@ -55,8 +55,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    // [Modul 10 - Integrasi Data JSON]: Muat data lokal saat widget pertama kali diinisialisasi
-    _loadDestinationsFromJson();
+    _loadDestinationsAndPersistence();
   }
 
   @override
@@ -65,34 +64,85 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
-  /// [Modul 10 - Deserialisasi JSON]:
-  /// Mengambil data dari assets/data/destinations.json dan mengubahnya menjadi
-  /// List objek DestinationModel menggunakan factory constructor fromJson.
-  Future<void> _loadDestinationsFromJson() async {
+  /// Memuat katalog destinasi secara asinkron serta menyinkronkan data dari
+  /// SharedPreferences dan berkas catatan lokal (Read and Write Files).
+  Future<void> _loadDestinationsAndPersistence() async {
     try {
       final String jsonString =
           await rootBundle.loadString('assets/data/destinations.json');
-      final List<dynamic> jsonList = json.decode(jsonString);
+      final List<dynamic> jsonList = json.decode(jsonString) as List<dynamic>;
 
-      final List<DestinationModel> loadedList = jsonList
+      final List<DestinationModel> rawList = jsonList
           .map((item) => DestinationModel.fromJson(item as Map<String, dynamic>))
           .toList();
 
-      // [Modul 09 - setState()]: Memperbarui state agar UI dirender ulang
+      // Ambil daftar favorit default dari JSON jika belum pernah diinisialisasi
+      final List<String> defaultFavIds = rawList
+          .where((item) => item.isFavorite)
+          .map((item) => item.id)
+          .toList();
+
+      // 1. Baca data persisten dari SharedPreferences
+      final List<String> savedFavIds =
+          await PersistenceService.loadFavoriteIds(defaultFavIds);
+      final String savedCategory = await PersistenceService.loadLastCategory();
+      final Map<String, dynamic> savedLocation =
+          await PersistenceService.loadUserLocation();
+
+      // 2. Baca seluruh catatan rencana kunjungan dari File lokal
+      final Map<String, ItineraryNoteModel> notesMap =
+          await PersistenceService.readAllNotesFromFile();
+
+      // Sinkronkan status isFavorite pada setiap objek destinasi
+      final List<DestinationModel> syncedList = rawList.map((item) {
+        return item.copyWith(isFavorite: savedFavIds.contains(item.id));
+      }).toList();
+
+      if (!mounted) return;
       setState(() {
-        _allDestinations = loadedList;
-        _filteredDestinations = loadedList;
+        _allDestinations = syncedList;
+        _selectedCategory =
+            _categories.contains(savedCategory) ? savedCategory : 'Semua';
+        _currentKecamatan = savedLocation['district'] as String;
+        _currentKota = savedLocation['city'] as String;
+        _userLat = savedLocation['latitude'] as double;
+        _userLng = savedLocation['longitude'] as double;
+        _localNotes = notesMap;
         _isLoading = false;
       });
+      _applyFilter();
     } catch (e) {
-      debugPrint('Gagal memuat file JSON: $e');
+      debugPrint('Gagal memuat data aplikasi: $e');
+      if (!mounted) return;
       setState(() {
         _isLoading = false;
       });
     }
   }
 
-  /// Logika filter gabungan pencarian kata kunci dan kategori
+  /// Menyinkronkan ulang status favorit (SharedPreferences) dan catatan (File)
+  /// setelah pengguna kembali dari halaman detail.
+  Future<void> _syncPersistenceState() async {
+    final List<String> defaultFavIds = _allDestinations
+        .where((item) => item.isFavorite)
+        .map((item) => item.id)
+        .toList();
+    final List<String> savedFavIds =
+        await PersistenceService.loadFavoriteIds(defaultFavIds);
+    final Map<String, ItineraryNoteModel> notesMap =
+        await PersistenceService.readAllNotesFromFile();
+
+    if (!mounted) return;
+    setState(() {
+      _allDestinations = _allDestinations.map((item) {
+        return item.copyWith(isFavorite: savedFavIds.contains(item.id));
+      }).toList();
+      _localNotes = notesMap;
+    });
+    _applyFilter();
+  }
+
+  /// Logika filter gabungan berdasarkan kata kunci pencarian dan kategori
   void _applyFilter() {
     final query = _searchController.text.toLowerCase().trim();
     setState(() {
@@ -109,9 +159,8 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  /// [Modul 09 - Like/Bookmark Toggle]:
-  /// Mengubah status favorit destinasi secara dinamis
-  void _toggleBookmark(String id) {
+  /// Mengubah status favorit destinasi dan menyimpannya secara persisten ke SharedPreferences
+  Future<void> _toggleBookmark(String id) async {
     setState(() {
       final index = _allDestinations.indexWhere((item) => item.id == id);
       if (index != -1) {
@@ -122,88 +171,178 @@ class _HomePageState extends State<HomePage> {
       }
     });
 
-    // [Modul 13 - Feedback Interaktif SnackBar]
+    final List<String> updatedFavIds = _allDestinations
+        .where((item) => item.isFavorite)
+        .map((item) => item.id)
+        .toList();
+    await PersistenceService.saveFavoriteIds(updatedFavIds);
+
+    if (!mounted) return;
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('Daftar favorit berhasil diperbarui!'),
+        content: Text('Daftar favorit berhasil disimpan ke SharedPreferences!'),
         duration: Duration(seconds: 1),
         behavior: SnackBarBehavior.floating,
       ),
     );
   }
 
-  /// [Modul 12 - GPS Refresh]: Simulasi pembaruan lokasi perangkat
-  void _refreshLocation() {
+  /// Memperbarui lokasi pengguna dan menyimpannya ke SharedPreferences
+  Future<void> _refreshLocation() async {
+    final bool isMalang = _currentKecamatan == 'Klojen';
+    final String nextDistrict = isMalang ? 'Batu' : 'Klojen';
+    final String nextCity = isMalang ? 'Kota Wisata Batu' : 'Kota Malang';
+    final double nextLat = isMalang ? -7.8712 : -7.9826;
+    final double nextLng = isMalang ? 112.5273 : 112.6308;
+
     setState(() {
-      _currentKecamatan = 'Batu';
-      _currentKota = 'Kota Wisata Batu';
+      _currentKecamatan = nextDistrict;
+      _currentKota = nextCity;
+      _userLat = nextLat;
+      _userLng = nextLng;
     });
+
+    await PersistenceService.saveUserLocation(
+      district: nextDistrict,
+      city: nextCity,
+      latitude: nextLat,
+      longitude: nextLng,
+    );
+
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Lokasi GPS disinkronkan: Kota Wisata Batu'),
-        duration: Duration(seconds: 2),
+      SnackBar(
+        content: Text(
+          'Lokasi disimpan di SharedPreferences: $nextDistrict, $nextCity',
+        ),
+        duration: const Duration(seconds: 2),
         behavior: SnackBarBehavior.floating,
       ),
     );
   }
 
+  /// Membuka halaman detail dan menyinkronkan data persisten saat kembali
+  Future<void> _openDetailPage(DestinationModel item) async {
+    await Navigator.pushNamed(
+      context,
+      '/detail',
+      arguments: item,
+    );
+    await _syncPersistenceState();
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(
+        backgroundColor: backgroundLight,
+        body: Center(
+          child: CircularProgressIndicator(color: primaryTeal),
+        ),
+      );
+    }
+
+    // IndexedStack mempertahankan state seluruh 4 tab navigasi utama
     return Scaffold(
       backgroundColor: backgroundLight,
-      body: SafeArea(
-        child: _isLoading
-            ? const Center(
-                child: CircularProgressIndicator(color: primaryTeal),
-              )
-            : RefreshIndicator(
-                color: primaryTeal,
-                onRefresh: _loadDestinationsFromJson,
-                child: SingleChildScrollView(
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 16.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // 1. Header Lokasi GPS & Notifikasi
-                        _buildLocationHeader(),
+      body: IndexedStack(
+        index: _currentNavIndex,
+        children: [
+          // Tab 0: Beranda (Home)
+          SafeArea(child: _buildHomeTabContent()),
 
-                        const SizedBox(height: 16),
+          // Tab 1: Eksplor (Category Page)
+          CategoryPage(
+            isStandalone: false,
+            initialItems: _allDestinations,
+            onToggleBookmark: _toggleBookmark,
+            onDataChanged: _syncPersistenceState,
+            userLat: _userLat,
+            userLng: _userLng,
+          ),
 
-                        // 2. Greeting & Search Bar
-                        _buildHeroSearchSection(),
+          // Tab 2: Disimpan (Saved / Bookmarks Page)
+          SavedPage(
+            initialItems: _allDestinations,
+            localNotes: _localNotes,
+            onToggleBookmark: _toggleBookmark,
+            onDataChanged: _syncPersistenceState,
+            onExploreTap: () {
+              setState(() {
+                _currentNavIndex = 0;
+              });
+            },
+            isStandalone: false,
+          ),
 
-                        const SizedBox(height: 20),
-
-                        // 3. Filter Kategori (Horizontal Chips)
-                        _buildCategoryFilter(),
-
-                        const SizedBox(height: 24),
-
-                        // 4. Seksi Destinasi Populer (Horizontal Carousel)
-                        _buildFeaturedSection(),
-
-                        const SizedBox(height: 24),
-
-                        // 5. Seksi Kuliner Legendaris (Vertical Feed)
-                        _buildCulinarySection(),
-
-                        const SizedBox(height: 16),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
+          // Tab 3: Akun (Profile Mahasiswa & Diagnostik Penyimpanan)
+          ProfilePage(
+            savedCount: _allDestinations.where((d) => d.isFavorite).length,
+            notesCount: _localNotes.length,
+            currentCity: _currentKota,
+            currentDistrict: _currentKecamatan,
+            onOpenSaved: () {
+              setState(() {
+                _currentNavIndex = 2;
+              });
+            },
+            onResetPersistence: () async {
+              await PersistenceService.resetAllPersistenceData();
+              await _loadDestinationsAndPersistence();
+            },
+            isStandalone: false,
+          ),
+        ],
       ),
-      // 6. Bottom Navigation Bar
       bottomNavigationBar: _buildBottomNavigationBar(),
     );
   }
 
-  /// [Modul 02, 03, & 12 - Row, Column & GPS Header]:
-  /// Menampilkan chip lokasi pengguna saat ini dengan ikon pin GPS
+  /// Konten Utama Tab Beranda
+  Widget _buildHomeTabContent() {
+    return RefreshIndicator(
+      color: primaryTeal,
+      onRefresh: _loadDestinationsAndPersistence,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 1. Header Lokasi GPS & Indikator Data Persistence
+              _buildLocationHeader(),
+
+              const SizedBox(height: 16),
+
+              // 2. Greeting & Search Bar
+              _buildHeroSearchSection(),
+
+              const SizedBox(height: 20),
+
+              // 3. Filter Kategori (Horizontal Chips)
+              _buildCategoryFilter(),
+
+              const SizedBox(height: 24),
+
+              // 4. Seksi Destinasi Populer (Horizontal Carousel)
+              _buildFeaturedSection(),
+
+              const SizedBox(height: 24),
+
+              // 5. Seksi Kuliner Legendaris (Vertical Feed)
+              _buildCulinarySection(),
+
+              const SizedBox(height: 16),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Menampilkan chip lokasi pengguna saat ini yang tersimpan di SharedPreferences
   Widget _buildLocationHeader() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20.0),
@@ -215,8 +354,7 @@ class _HomePageState extends State<HomePage> {
             onTap: _refreshLocation,
             borderRadius: BorderRadius.circular(50),
             child: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
               decoration: BoxDecoration(
                 color: primaryLight.withValues(alpha: 0.5),
                 borderRadius: BorderRadius.circular(50),
@@ -241,16 +379,16 @@ class _HomePageState extends State<HomePage> {
                   ),
                   const SizedBox(width: 4),
                   const Icon(
-                    Icons.keyboard_arrow_down,
+                    Icons.sync_rounded,
                     color: primaryDark,
-                    size: 16,
+                    size: 15,
                   ),
                 ],
               ),
             ),
           ),
 
-          // Tombol Notifikasi / Aksi Kanan
+          // Tombol Info Status Penyimpanan Lokal
           Container(
             decoration: BoxDecoration(
               color: surfaceWhite,
@@ -265,14 +403,19 @@ class _HomePageState extends State<HomePage> {
               ],
             ),
             child: IconButton(
-              icon: const Icon(Icons.notifications_none_outlined),
-              color: textPrimary,
-              iconSize: 22,
+              icon: const Icon(Icons.storage_rounded),
+              color: primaryTeal,
+              iconSize: 20,
+              tooltip: 'Status Penyimpanan Lokal',
               onPressed: () {
+                final favCount =
+                    _allDestinations.where((d) => d.isFavorite).length;
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Tidak ada notifikasi baru.'),
-                    duration: Duration(seconds: 1),
+                  SnackBar(
+                    content: Text(
+                      'Data Persistence Aktif: $favCount Favorit (SharedPrefs) & ${_localNotes.length} Catatan (File JSON)',
+                    ),
+                    duration: const Duration(seconds: 2),
                     behavior: SnackBarBehavior.floating,
                   ),
                 );
@@ -284,7 +427,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// [Modul 02 & 10 - Greeting & Search Input]:
   Widget _buildHeroSearchSection() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20.0),
@@ -310,8 +452,6 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
           const SizedBox(height: 16),
-
-          // [Modul 10 - TextField Search Bar]:
           Container(
             decoration: BoxDecoration(
               color: surfaceWhite,
@@ -354,7 +494,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// [Modul 02 & 06 - Horizontal Category Chips]:
   Widget _buildCategoryFilter() {
     return SizedBox(
       height: 38,
@@ -374,6 +513,7 @@ class _HomePageState extends State<HomePage> {
                   _selectedCategory = category;
                 });
                 _applyFilter();
+                PersistenceService.saveLastCategory(category);
               },
               borderRadius: BorderRadius.circular(50),
               child: AnimatedContainer(
@@ -415,11 +555,9 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// [Modul 04, 05 & 06 - Destinasi Populer Horizontal Cards]:
   Widget _buildFeaturedSection() {
-    final featuredItems = _filteredDestinations
-        .where((item) => item.rating >= 4.7)
-        .toList();
+    final featuredItems =
+        _filteredDestinations.where((item) => item.rating >= 4.7).toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -439,8 +577,9 @@ class _HomePageState extends State<HomePage> {
               ),
               InkWell(
                 onTap: () {
-                  // [Modul 07 - Navigasi]: Pindah ke halaman Kategori/Eksplor
-                  Navigator.pushNamed(context, '/category');
+                  setState(() {
+                    _currentNavIndex = 1;
+                  });
                 },
                 child: const Text(
                   'Lihat Semua',
@@ -476,8 +615,9 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// [Modul 05 - Widget Card & ClipRRect]:
   Widget _buildFeaturedCard(DestinationModel item) {
+    final bool hasNote = _localNotes.containsKey(item.id);
+
     return Container(
       width: 210,
       margin: const EdgeInsets.only(right: 14, bottom: 6),
@@ -490,15 +630,7 @@ class _HomePageState extends State<HomePage> {
         color: surfaceWhite,
         clipBehavior: Clip.antiAlias,
         child: InkWell(
-          onTap: () {
-            // [Modul 07 & 08 - Navigasi dengan Argument]:
-            // Membuka halaman detail dan meneruskan objek destinasi
-            Navigator.pushNamed(
-              context,
-              '/detail',
-              arguments: item,
-            );
-          },
+          onTap: () => _openDetailPage(item),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -552,7 +684,42 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                   ),
-                  // [Modul 09 - Tombol Like/Bookmark]:
+                  // Indikator Catatan Lokal Tersimpan (jika ada)
+                  if (hasNote)
+                    Positioned(
+                      bottom: 8,
+                      left: 10,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 7,
+                          vertical: 3,
+                        ),
+                        decoration: BoxDecoration(
+                          color: primaryDark.withValues(alpha: 0.88),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.edit_note_rounded,
+                              color: Colors.white,
+                              size: 12,
+                            ),
+                            SizedBox(width: 3),
+                            Text(
+                              'Catatan',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  // Tombol Favorit
                   Positioned(
                     top: 8,
                     right: 8,
@@ -584,7 +751,6 @@ class _HomePageState extends State<HomePage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Badge Kategori
                     Text(
                       item.category.toUpperCase(),
                       style: const TextStyle(
@@ -595,7 +761,6 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                     const SizedBox(height: 4),
-                    // Nama Destinasi
                     Text(
                       item.name,
                       maxLines: 1,
@@ -607,7 +772,6 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                     const SizedBox(height: 4),
-                    // Lokasi Kecamatan & Kota
                     Row(
                       children: [
                         const Icon(
@@ -630,7 +794,6 @@ class _HomePageState extends State<HomePage> {
                       ],
                     ),
                     const SizedBox(height: 8),
-                    // Harga Tiket
                     Text(
                       item.formattedPrice,
                       style: const TextStyle(
@@ -649,7 +812,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// [Modul 05 & 06 - Seksi Kuliner Legendaris]:
   Widget _buildCulinarySection() {
     final culinaryItems = _filteredDestinations
         .where((item) =>
@@ -679,6 +841,7 @@ class _HomePageState extends State<HomePage> {
                     _selectedCategory = 'Kuliner Legendaris';
                   });
                   _applyFilter();
+                  PersistenceService.saveLastCategory('Kuliner Legendaris');
                 },
                 child: const Text(
                   'Filter Kuliner',
@@ -692,8 +855,6 @@ class _HomePageState extends State<HomePage> {
             ],
           ),
           const SizedBox(height: 12),
-
-          // [Modul 06 - ListView.builder Vertikal]:
           ListView.builder(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
@@ -708,7 +869,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// [Modul 02, 04, 05 - Row, Expanded, & Card Kuliner]:
   Widget _buildCulinaryListCard(DestinationModel item) {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -721,18 +881,11 @@ class _HomePageState extends State<HomePage> {
         color: surfaceWhite,
         clipBehavior: Clip.antiAlias,
         child: InkWell(
-          onTap: () {
-            Navigator.pushNamed(
-              context,
-              '/detail',
-              arguments: item,
-            );
-          },
+          onTap: () => _openDetailPage(item),
           child: Padding(
             padding: const EdgeInsets.all(10.0),
             child: Row(
               children: [
-                // Thumbnail Gambar Bersudut Melengkung
                 ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: Image.network(
@@ -749,8 +902,6 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
                 const SizedBox(width: 12),
-
-                // [Modul 04 - Expanded Info Teks]:
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -847,7 +998,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// [Modul 04 & 05 - Bottom Navigation Bar]:
   Widget _buildBottomNavigationBar() {
     return Container(
       decoration: BoxDecoration(
@@ -869,9 +1019,6 @@ class _HomePageState extends State<HomePage> {
           setState(() {
             _currentNavIndex = index;
           });
-          if (index == 1) {
-            Navigator.pushNamed(context, '/category');
-          }
         },
         type: BottomNavigationBarType.fixed,
         backgroundColor: surfaceWhite,

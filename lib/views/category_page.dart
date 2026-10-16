@@ -1,16 +1,28 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/destination_model.dart';
+import '../services/persistence_service.dart';
 import 'detail_page.dart';
 
-/// [Modul 01 - Struktur Widget Flutter]
-/// [Modul 07 - Navigasi Antar Halaman & Routing]:
-/// CategoryPage menampilkan katalog destinasi wisata dan kuliner dengan filter kategori,
-/// pengurutan dinamis, serta navigasi ke halaman Detail dengan passing argument (Modul 08).
-/// [Modul 09 - StatefulWidget]: Mengelola state lokal filter kategori, opsi sort, dan bookmark.
 class CategoryPage extends StatefulWidget {
-  const CategoryPage({super.key});
+  final bool isStandalone;
+  final List<DestinationModel>? initialItems;
+  final Function(String id)? onToggleBookmark;
+  final VoidCallback? onDataChanged;
+  final double userLat;
+  final double userLng;
+
+  const CategoryPage({
+    super.key,
+    this.isStandalone = true,
+    this.initialItems,
+    this.onToggleBookmark,
+    this.onDataChanged,
+    this.userLat = -7.9826,
+    this.userLng = 112.6308,
+  });
 
   static const String routeName = '/category';
 
@@ -19,13 +31,10 @@ class CategoryPage extends StatefulWidget {
 }
 
 class _CategoryPageState extends State<CategoryPage> {
-  // ==========================================
-  // [Design System Tokens - Berdasarkan Stitch]
-  // ==========================================
-  static const Color primaryTeal = Color(0xFF0D9488); // Primary
+  static const Color primaryTeal = Color(0xFF0D9488);
   static const Color primaryDark = Color(0xFF0F766E);
   static const Color primaryLight = Color(0xFFCCFBF1);
-  static const Color accentAmber = Color(0xFFF59E0B); // Secondary
+  static const Color accentAmber = Color(0xFFF59E0B);
   static const Color backgroundLight = Color(0xFFF8FAFC);
   static const Color surfaceWhite = Color(0xFFFFFFFF);
   static const Color borderSubtle = Color(0xFFE2E8F0);
@@ -33,7 +42,6 @@ class _CategoryPageState extends State<CategoryPage> {
   static const Color textMuted = Color(0xFF64748B);
   static const Color favoriteRed = Color(0xFFEF4444);
 
-  // [Modul 09 - State Data]:
   List<DestinationModel> _allDestinations = [];
   List<DestinationModel> _displayedDestinations = [];
   bool _isLoading = true;
@@ -41,7 +49,6 @@ class _CategoryPageState extends State<CategoryPage> {
   String _activeSort = 'Populer';
   final TextEditingController _searchController = TextEditingController();
 
-  // Kategori sesuai desain Stitch Wireframe dengan Icon & Counter
   final List<Map<String, dynamic>> _categoryTabs = [
     {'name': 'Semua', 'icon': '✨'},
     {'name': 'Wisata Alam', 'icon': '🏔️'},
@@ -51,13 +58,34 @@ class _CategoryPageState extends State<CategoryPage> {
     {'name': 'Kafe & Santai', 'icon': '☕'},
   ];
 
-  final List<String> _sortOptions = ['Populer', 'Terdekat', 'Harga', 'Rating > 4.6'];
+  final List<String> _sortOptions = [
+    'Populer',
+    'Terdekat',
+    'Harga',
+    'Rating > 4.6',
+  ];
 
   @override
   void initState() {
     super.initState();
-    // [Modul 10 - Membaca data JSON lokal]:
-    _loadDestinations();
+    if (widget.initialItems != null) {
+      _allDestinations = List.from(widget.initialItems!);
+      _isLoading = false;
+      _filterAndSortData();
+    } else {
+      _loadDestinations();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant CategoryPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.initialItems != null) {
+      setState(() {
+        _allDestinations = List.from(widget.initialItems!);
+        _filterAndSortData();
+      });
+    }
   }
 
   @override
@@ -66,24 +94,35 @@ class _CategoryPageState extends State<CategoryPage> {
     super.dispose();
   }
 
-  /// [Modul 10 - JSON Deserialization]:
-  /// Mengambil data dari assets/data/destinations.json
   Future<void> _loadDestinations() async {
     try {
       final String jsonString =
           await rootBundle.loadString('assets/data/destinations.json');
-      final List<dynamic> jsonList = json.decode(jsonString);
+      final List<dynamic> jsonList = json.decode(jsonString) as List<dynamic>;
       final List<DestinationModel> loaded = jsonList
           .map((item) => DestinationModel.fromJson(item as Map<String, dynamic>))
           .toList();
 
+      final List<String> defaultFavs = loaded
+          .where((e) => e.isFavorite)
+          .map((e) => e.id)
+          .toList();
+      final List<String> savedFavIds =
+          await PersistenceService.loadFavoriteIds(defaultFavs);
+
+      final List<DestinationModel> synced = loaded
+          .map((item) => item.copyWith(isFavorite: savedFavIds.contains(item.id)))
+          .toList();
+
+      if (!mounted) return;
       setState(() {
-        _allDestinations = loaded;
+        _allDestinations = synced;
         _isLoading = false;
         _filterAndSortData();
       });
     } catch (e) {
       debugPrint('Gagal memuat data destinasi: $e');
+      if (!mounted) return;
       setState(() {
         _isLoading = false;
       });
@@ -113,6 +152,16 @@ class _CategoryPageState extends State<CategoryPage> {
     // 3. Pengurutan (Sorting)
     if (_activeSort == 'Populer') {
       list.sort((a, b) => b.reviewCount.compareTo(a.reviewCount));
+    } else if (_activeSort == 'Terdekat') {
+      final uLat = widget.userLat;
+      final uLng = widget.userLng;
+      list.sort((a, b) {
+        final distA =
+            math.pow(a.latitude - uLat, 2) + math.pow(a.longitude - uLng, 2);
+        final distB =
+            math.pow(b.latitude - uLat, 2) + math.pow(b.longitude - uLng, 2);
+        return distA.compareTo(distB);
+      });
     } else if (_activeSort == 'Harga') {
       list.sort((a, b) => a.ticketPrice.compareTo(b.ticketPrice));
     } else if (_activeSort == 'Rating > 4.6') {
@@ -125,27 +174,31 @@ class _CategoryPageState extends State<CategoryPage> {
     });
   }
 
-  /// [Modul 09 - Bookmark Toggle]:
-  void _toggleBookmark(String id) {
-    setState(() {
-      final index = _allDestinations.indexWhere((item) => item.id == id);
-      if (index != -1) {
-        final current = _allDestinations[index].isFavorite;
-        _allDestinations[index] =
-            _allDestinations[index].copyWith(isFavorite: !current);
-        _filterAndSortData();
-      }
-    });
+  Future<void> _toggleBookmark(String id) async {
+    if (widget.onToggleBookmark != null) {
+      widget.onToggleBookmark!(id);
+    } else {
+      await PersistenceService.toggleFavoriteId(id);
+      if (!mounted) return;
+      setState(() {
+        final index = _allDestinations.indexWhere((item) => item.id == id);
+        if (index != -1) {
+          final current = _allDestinations[index].isFavorite;
+          _allDestinations[index] =
+              _allDestinations[index].copyWith(isFavorite: !current);
+          _filterAndSortData();
+        }
+      });
 
-    // [Modul 13 - Interaktivitas SnackBar]:
-    ScaffoldMessenger.of(context).hideCurrentSnackBar();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Status favorit diperbarui.'),
-        duration: Duration(seconds: 1),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Status favorit diperbarui di SharedPreferences.'),
+          duration: Duration(seconds: 1),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   int _countByCategory(String category) {
@@ -157,7 +210,6 @@ class _CategoryPageState extends State<CategoryPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: backgroundLight,
-      // [Modul 07 - AppBar Navigasi]:
       appBar: _buildAppBar(),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator(color: primaryTeal))
@@ -171,7 +223,7 @@ class _CategoryPageState extends State<CategoryPage> {
 
                 const SizedBox(height: 12),
 
-                // 2. Filter Kategori Horizontal (Stitch Style)
+                // 2. Filter Kategori Horizontal
                 _buildCategoryChips(),
 
                 const SizedBox(height: 12),
@@ -181,7 +233,7 @@ class _CategoryPageState extends State<CategoryPage> {
 
                 const SizedBox(height: 8),
 
-                // 4. Feed Kartu Destinasi (Modul 06 - ListView.builder)
+                // 4. Feed Kartu Destinasi (ListView.builder)
                 Expanded(
                   child: _displayedDestinations.isEmpty
                       ? _buildEmptyState()
@@ -202,16 +254,18 @@ class _CategoryPageState extends State<CategoryPage> {
     );
   }
 
-  /// [Modul 02, 03, & 07 - Top App Bar]:
   PreferredSizeWidget _buildAppBar() {
     return AppBar(
       backgroundColor: surfaceWhite,
       elevation: 0,
-      leading: IconButton(
-        icon: const Icon(Icons.arrow_back_ios_new, color: textPrimary, size: 18),
-        // [Modul 07 - Navigator.pop]: Kembali ke halaman sebelumnya
-        onPressed: () => Navigator.pop(context),
-      ),
+      automaticallyImplyLeading: widget.isStandalone,
+      leading: widget.isStandalone
+          ? IconButton(
+              icon: const Icon(Icons.arrow_back_ios_new,
+                  color: textPrimary, size: 18),
+              onPressed: () => Navigator.pop(context),
+            )
+          : null,
       title: const Text(
         'Eksplor Wisata & Kuliner',
         style: TextStyle(
@@ -243,7 +297,6 @@ class _CategoryPageState extends State<CategoryPage> {
     );
   }
 
-  /// [Modul 10 - Search Input Widget]:
   Widget _buildSearchInput() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -287,7 +340,6 @@ class _CategoryPageState extends State<CategoryPage> {
     );
   }
 
-  /// [Modul 02 & 06 - Category Chips Selector dengan Counter]:
   Widget _buildCategoryChips() {
     return SizedBox(
       height: 40,
@@ -314,7 +366,8 @@ class _CategoryPageState extends State<CategoryPage> {
               borderRadius: BorderRadius.circular(50),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 180),
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                 decoration: BoxDecoration(
                   color: isSelected ? primaryTeal : surfaceWhite,
                   borderRadius: BorderRadius.circular(50),
@@ -355,14 +408,11 @@ class _CategoryPageState extends State<CategoryPage> {
     );
   }
 
-  /// [Modul 02, 03 - Row Alignment & Sort Option Tabs]:
   Widget _buildSortAndCounterBar() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16.0),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // Counter Hasil
           Text(
             '${_displayedDestinations.length} Destinasi',
             style: const TextStyle(
@@ -371,55 +421,62 @@ class _CategoryPageState extends State<CategoryPage> {
               color: textPrimary,
             ),
           ),
-
-          // Pilihan Pengurutan (Pill Button)
-          Row(
-            children: _sortOptions.map((opt) {
-              final isSelected = _activeSort == opt;
-              return Padding(
-                padding: const EdgeInsets.only(left: 6.0),
-                child: InkWell(
-                  onTap: () {
-                    setState(() {
-                      _activeSort = opt;
-                    });
-                    _filterAndSortData();
-                  },
-                  borderRadius: BorderRadius.circular(20),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 5,
-                    ),
-                    decoration: BoxDecoration(
-                      color: isSelected
-                          ? primaryLight.withValues(alpha: 0.8)
-                          : surfaceWhite,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: isSelected ? primaryTeal : borderSubtle,
+          const SizedBox(width: 8),
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: _sortOptions.map((opt) {
+                    final isSelected = _activeSort == opt;
+                    return Padding(
+                      padding: const EdgeInsets.only(left: 6.0),
+                      child: InkWell(
+                        onTap: () {
+                          setState(() {
+                            _activeSort = opt;
+                          });
+                          _filterAndSortData();
+                        },
+                        borderRadius: BorderRadius.circular(20),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 5,
+                          ),
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? primaryLight.withValues(alpha: 0.8)
+                                : surfaceWhite,
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: isSelected ? primaryTeal : borderSubtle,
+                            ),
+                          ),
+                          child: Text(
+                            opt,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: isSelected
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                              color: isSelected ? primaryDark : textMuted,
+                            ),
+                          ),
+                        ),
                       ),
-                    ),
-                    child: Text(
-                      opt,
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight:
-                            isSelected ? FontWeight.bold : FontWeight.normal,
-                        color: isSelected ? primaryDark : textMuted,
-                      ),
-                    ),
-                  ),
+                    );
+                  }).toList(),
                 ),
-              );
-            }).toList(),
+              ),
+            ),
           ),
         ],
       ),
     );
   }
 
-  /// [Modul 04 & 05 - Card Item Destinasi Berstruktur Rapi]:
   Widget _buildDestinationCard(DestinationModel item) {
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
@@ -432,13 +489,17 @@ class _CategoryPageState extends State<CategoryPage> {
         color: surfaceWhite,
         clipBehavior: Clip.antiAlias,
         child: InkWell(
-          onTap: () {
-            // [Modul 07 & 08 - Navigasi dengan Arguments]:
-            Navigator.pushNamed(
+          onTap: () async {
+            await Navigator.pushNamed(
               context,
               DetailPage.routeName,
               arguments: item,
             );
+            if (widget.onDataChanged != null) {
+              widget.onDataChanged!();
+            } else {
+              await _loadDestinations();
+            }
           },
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -522,7 +583,6 @@ class _CategoryPageState extends State<CategoryPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Kategori & Harga
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -556,8 +616,6 @@ class _CategoryPageState extends State<CategoryPage> {
                       ],
                     ),
                     const SizedBox(height: 8),
-
-                    // Judul Destinasi
                     Text(
                       item.name,
                       style: const TextStyle(
@@ -567,8 +625,6 @@ class _CategoryPageState extends State<CategoryPage> {
                       ),
                     ),
                     const SizedBox(height: 6),
-
-                    // Lokasi Kecamatan & Kota
                     Row(
                       children: [
                         const Icon(
@@ -620,7 +676,11 @@ class _CategoryPageState extends State<CategoryPage> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.search_off_rounded, size: 54, color: textMuted.withValues(alpha: 0.5)),
+          Icon(
+            Icons.search_off_rounded,
+            size: 54,
+            color: textMuted.withValues(alpha: 0.5),
+          ),
           const SizedBox(height: 12),
           const Text(
             'Tidak ada destinasi yang cocok.',

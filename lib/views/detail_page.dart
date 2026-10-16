@@ -1,13 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:intl/intl.dart';
 import '../models/destination_model.dart';
+import '../models/itinerary_note_model.dart';
+import '../services/persistence_service.dart';
 
-/// [Modul 01 - Struktur Widget Flutter]
-/// [Modul 07 & 08 - Navigasi dengan Passing Arguments]:
-/// DetailPage menerima objek DestinationModel yang dikirimkan melalui
-/// Navigator.pushNamed('/detail', arguments: item).
-/// Data diakses dengan ModalRoute.of(context)!.settings.arguments (Modul 08).
-/// [Modul 09 - StatefulWidget]: Mengelola interaksi status bookmark (like) secara reaktif dengan setState().
 class DetailPage extends StatefulWidget {
   const DetailPage({super.key});
 
@@ -18,14 +15,11 @@ class DetailPage extends StatefulWidget {
 }
 
 class _DetailPageState extends State<DetailPage> {
-  // ==========================================
-  // [Design System Tokens - Sesuai Stitch Canvas]
-  // ==========================================
-  static const Color primaryTeal = Color(0xFF0D9488); // Primary Color
+  static const Color primaryTeal = Color(0xFF0D9488);
   static const Color primaryDark = Color(0xFF0F766E);
   static const Color primaryLight = Color(0xFFCCFBF1);
-  static const Color accentAmber = Color(0xFFF59E0B); // Secondary Color
-  static const Color tertiaryTerracotta = Color(0xFFC36D4B); // Tertiary Color
+  static const Color accentAmber = Color(0xFFF59E0B);
+  static const Color tertiaryTerracotta = Color(0xFFC36D4B);
   static const Color backgroundLight = Color(0xFFF8FAFC);
   static const Color surfaceWhite = Color(0xFFFFFFFF);
   static const Color borderSubtle = Color(0xFFE2E8F0);
@@ -37,28 +31,47 @@ class _DetailPageState extends State<DetailPage> {
   bool _isInit = false;
   int _selectedGalleryIndex = 0;
 
+  ItineraryNoteModel? _destinationNote;
+  bool _isNoteLoading = true;
+  String _localFilePath = PersistenceService.localNotesFileName;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // Inisialisasi status favorit awal dari argumen yang diteruskan
     if (!_isInit) {
       final item =
           ModalRoute.of(context)?.settings.arguments as DestinationModel?;
       if (item != null) {
         _isFavorite = item.isFavorite;
+        _loadPersistenceDataForItem(item.id);
       }
       _isInit = true;
     }
   }
 
-  /// [Modul 09 - Interaksi Tombol Like/Bookmark]:
-  /// Mengubah status favorit secara dinamis dengan setState()
-  void _toggleFavorite(DestinationModel item) {
+  /// Memuat status favorit dari SharedPreferences dan catatan kunjungan dari File lokal secara asinkron.
+  Future<void> _loadPersistenceDataForItem(String destinationId) async {
+    final ItineraryNoteModel? savedNote =
+        await PersistenceService.readNoteForDestination(destinationId);
+    final String filePath = await PersistenceService.getLocalNotesFilePath();
+
+    if (!mounted) return;
     setState(() {
-      _isFavorite = !_isFavorite;
+      _destinationNote = savedNote;
+      _localFilePath = filePath;
+      _isNoteLoading = false;
+    });
+  }
+
+  /// Mengubah status favorit dan menyimpannya secara persisten ke SharedPreferences.
+  Future<void> _toggleFavorite(DestinationModel item) async {
+    final bool newStatus = await PersistenceService.toggleFavoriteId(item.id);
+    if (!mounted) return;
+
+    setState(() {
+      _isFavorite = newStatus;
     });
 
-    // [Modul 13 - Feedback Interaktif SnackBar]:
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -73,8 +86,8 @@ class _DetailPageState extends State<DetailPage> {
             Expanded(
               child: Text(
                 _isFavorite
-                    ? '${item.name} ditambahkan ke Favorit! ❤️'
-                    : '${item.name} dihapus dari Favorit.',
+                    ? '${item.name} disimpan ke SharedPreferences! ❤️'
+                    : '${item.name} dihapus dari SharedPreferences.',
               ),
             ),
           ],
@@ -87,13 +100,157 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
+  /// Menampilkan dialog untuk menulis atau memperbarui catatan rencana kunjungan ke File lokal.
+  void _showNoteEditorDialog(DestinationModel item) {
+    final TextEditingController dateCtrl = TextEditingController(
+      text: _destinationNote?.plannedDate ?? '25 Oktober 2026',
+    );
+    final TextEditingController noteCtrl = TextEditingController(
+      text: _destinationNote?.noteText ?? '',
+    );
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: Row(
+          children: [
+            const Icon(Icons.edit_note_rounded, color: primaryTeal),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                _destinationNote == null
+                    ? 'Tulis Catatan Kunjungan'
+                    : 'Edit Catatan Kunjungan',
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Destinasi: ${item.name}',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: primaryDark,
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: dateCtrl,
+                decoration: InputDecoration(
+                  labelText: 'Rencana Tanggal Kunjungan',
+                  hintText: 'Contoh: 25 Oktober 2026',
+                  prefixIcon: const Icon(Icons.calendar_today, size: 18),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: noteCtrl,
+                maxLines: 4,
+                decoration: InputDecoration(
+                  labelText: 'Catatan Rencana / Barang Bawaan / Ulasan',
+                  hintText:
+                      'Tulis catatan perjalanan, estimasi budget, atau kuliner yang ingin dicoba...',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Batal'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () async {
+              final String plannedDate = dateCtrl.text.trim();
+              final String noteText = noteCtrl.text.trim();
+              if (noteText.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Isi catatan tidak boleh kosong.'),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+                return;
+              }
+
+              final String timestamp =
+                  DateFormat("dd MMM yyyy, HH:mm 'WIB'").format(DateTime.now());
+              final ItineraryNoteModel newNote = ItineraryNoteModel(
+                destinationId: item.id,
+                destinationName: item.name,
+                plannedDate:
+                    plannedDate.isEmpty ? 'Belum ditentukan' : plannedDate,
+                noteText: noteText,
+                updatedAt: timestamp,
+              );
+
+              Navigator.pop(ctx);
+              await PersistenceService.writeNoteToFile(newNote);
+              if (!mounted) return;
+              setState(() {
+                _destinationNote = newNote;
+              });
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text(
+                    'Catatan berhasil ditulis ke file catatan_wisata_lokanusantara.json!',
+                  ),
+                  backgroundColor: primaryTeal,
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: primaryTeal),
+            icon: const Icon(Icons.save_outlined, size: 16, color: Colors.white),
+            label: const Text(
+              'Simpan ke File',
+              style: TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Menghapus catatan rencana kunjungan dari File lokal.
+  Future<void> _deleteLocalNote(DestinationModel item) async {
+    await PersistenceService.deleteNoteFromFile(item.id);
+    if (!mounted) return;
+    setState(() {
+      _destinationNote = null;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Catatan dihapus dari file catatan_wisata_lokanusantara.json.',
+        ),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    // [Modul 08 - Mengambil Data Argument Navigasi]:
     final item =
         ModalRoute.of(context)?.settings.arguments as DestinationModel?;
 
-    // Proteksi data jika halaman dibuka tanpa parameter
     if (item == null) {
       return Scaffold(
         appBar: AppBar(title: const Text('Detail Destinasi')),
@@ -128,10 +285,7 @@ class _DetailPageState extends State<DetailPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // [Modul 10 - Hero Photography Banner 320px]
                 _buildHeroBanner(item, activeGallery),
-
-                // [Modul 02 & 05 - Rounded Sheet Content Container]
                 Transform.translate(
                   offset: const Offset(0, -24),
                   child: Container(
@@ -154,7 +308,7 @@ class _DetailPageState extends State<DetailPage> {
 
                         const SizedBox(height: 12),
 
-                        // Nama Destinasi / Judul Utama (Display Scale)
+                        // Nama Destinasi / Judul Utama
                         Text(
                           item.name,
                           style: const TextStyle(
@@ -193,18 +347,16 @@ class _DetailPageState extends State<DetailPage> {
 
                         const SizedBox(height: 20),
 
-                        // [Modul 03, 04, 05 - Quick Stat Badges: Rating, Jam Buka, Kota]
                         _buildQuickStatBadges(item),
 
                         const SizedBox(height: 24),
 
-                        // [Modul 06 & 10 - Galeri Foto Tambahan (Horizontal List)]
                         if (activeGallery.length > 1) ...[
                           _buildGalleryThumbnails(activeGallery),
                           const SizedBox(height: 24),
                         ],
 
-                        // Tentang Destinasi (Deskripsi Komprehensif)
+                        // Tentang Destinasi
                         const Text(
                           'Tentang Destinasi',
                           style: TextStyle(
@@ -231,10 +383,13 @@ class _DetailPageState extends State<DetailPage> {
                           const SizedBox(height: 24),
                         ],
 
-                        // [Modul 12 - GPS Coordinates & Map Integration Card]
+                        // Seksi Catatan Rencana Kunjungan (Read & Write Files Persistence)
+                        _buildLocalFileNoteSection(item),
+
+                        const SizedBox(height: 24),
+
                         _buildGpsMapCard(item),
 
-                        // Jarak bawah agar tidak tertutup bottom action bar
                         const SizedBox(height: 90),
                       ],
                     ),
@@ -254,7 +409,178 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  /// [Modul 10 - Hero Banner]: Foto utama dengan counter galeri
+  /// Komponen UI untuk menampilkan dan mengelola Catatan Rencana Kunjungan
+  /// menggunakan teknik Read and Write Files (catatan_wisata_lokanusantara.json).
+  Widget _buildLocalFileNoteSection(DestinationModel item) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFFBEB),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: accentAmber.withValues(alpha: 0.45)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: accentAmber.withValues(alpha: 0.18),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.folder_special_rounded,
+                      color: Color(0xFFB45309),
+                      size: 18,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  const Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Catatan Rencana Kunjungan',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: textPrimary,
+                        ),
+                      ),
+                      Text(
+                        'Read & Write File (catatan_wisata_lokanusantara.json)',
+                        style: TextStyle(fontSize: 10.5, color: textMuted),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              if (_destinationNote != null)
+                IconButton(
+                  onPressed: () => _deleteLocalNote(item),
+                  icon: const Icon(
+                    Icons.delete_outline,
+                    color: favoriteRed,
+                    size: 20,
+                  ),
+                  tooltip: 'Hapus Catatan dari File',
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (_isNoteLoading)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(8.0),
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            )
+          else if (_destinationNote == null)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: surfaceWhite,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: borderSubtle),
+              ),
+              child: const Text(
+                'Belum ada catatan rencana kunjungan pada penyimpanan file lokal untuk destinasi ini.',
+                style: TextStyle(fontSize: 12.5, color: textMuted, height: 1.4),
+              ),
+            )
+          else
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: surfaceWhite,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: borderSubtle),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.event_available_rounded,
+                        size: 14,
+                        color: primaryTeal,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Jadwal: ${_destinationNote!.plannedDate}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: primaryDark,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    _destinationNote!.noteText,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: textPrimary,
+                      height: 1.45,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Tersimpan di File: $_localFilePath\nDiperbarui: ${_destinationNote!.updatedAt}',
+                    style: const TextStyle(
+                      fontSize: 10,
+                      color: textMuted,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: () => _showNoteEditorDialog(item),
+              icon: Icon(
+                _destinationNote == null
+                    ? Icons.note_add_outlined
+                    : Icons.edit_outlined,
+                size: 16,
+                color: Colors.white,
+              ),
+              label: Text(
+                _destinationNote == null
+                    ? 'Tulis Catatan Rencana Kunjungan'
+                    : 'Edit Catatan di File Lokal',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12.5,
+                ),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFD97706),
+                padding: const EdgeInsets.symmetric(vertical: 11),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                elevation: 0,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildHeroBanner(DestinationModel item, List<String> gallery) {
     return Stack(
       children: [
@@ -271,8 +597,6 @@ class _DetailPageState extends State<DetailPage> {
             ),
           ),
         ),
-
-        // Gradient gelap halus di bagian atas agar tombol terlihat jelas
         Positioned(
           top: 0,
           left: 0,
@@ -291,8 +615,6 @@ class _DetailPageState extends State<DetailPage> {
             ),
           ),
         ),
-
-        // Counter Foto (Kanan Bawah Banner)
         Positioned(
           bottom: 36,
           right: 16,
@@ -323,7 +645,6 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  /// [Modul 07 - Navigator.pop & Modul 09 - Bookmark Floating Button]:
   Widget _buildFloatingTopBar(DestinationModel item) {
     return Positioned(
       top: 0,
@@ -335,14 +656,11 @@ class _DetailPageState extends State<DetailPage> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              // [Modul 07 - Navigator.pop]: Tombol Kembali
               _buildCircleButton(
                 icon: Icons.arrow_back_ios_new,
                 iconSize: 18,
                 onTap: () => Navigator.pop(context),
               ),
-
-              // Tombol Bagikan & Tombol Bookmark
               Row(
                 children: [
                   _buildCircleButton(
@@ -358,7 +676,6 @@ class _DetailPageState extends State<DetailPage> {
                     },
                   ),
                   const SizedBox(width: 10),
-                  // [Modul 09 - Toggle Bookmark Favorite]:
                   _buildCircleButton(
                     icon: _isFavorite ? Icons.favorite : Icons.favorite_border,
                     iconColor: _isFavorite ? favoriteRed : textPrimary,
@@ -401,7 +718,6 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  /// [Modul 02, 03 - Row & SpaceBetween]: Kategori dan Harga
   Widget _buildCategoryAndPriceRow(DestinationModel item) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -434,11 +750,9 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  /// [Modul 04 & 05 - Row, Expanded, & Card Stat Badges]:
   Widget _buildQuickStatBadges(DestinationModel item) {
     return Row(
       children: [
-        // 1. Rating Badge (Secondary Amber)
         Expanded(
           child: _buildBadgeCard(
             icon: Icons.star_rounded,
@@ -448,8 +762,6 @@ class _DetailPageState extends State<DetailPage> {
           ),
         ),
         const SizedBox(width: 8),
-
-        // 2. Jam Operasional (Primary Teal)
         Expanded(
           child: _buildBadgeCard(
             icon: Icons.access_time_filled_rounded,
@@ -459,8 +771,6 @@ class _DetailPageState extends State<DetailPage> {
           ),
         ),
         const SizedBox(width: 8),
-
-        // 3. Wilayah (Tertiary Terracotta)
         Expanded(
           child: _buildBadgeCard(
             icon: Icons.explore,
@@ -517,7 +827,6 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  /// [Modul 06 - Horizontal Gallery ListView]:
   Widget _buildGalleryThumbnails(List<String> gallery) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -562,6 +871,16 @@ class _DetailPageState extends State<DetailPage> {
                         width: 80,
                         height: 64,
                         fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) => Container(
+                          width: 80,
+                          height: 64,
+                          color: primaryLight,
+                          child: const Icon(
+                            Icons.broken_image_outlined,
+                            size: 24,
+                            color: primaryTeal,
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -574,7 +893,6 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  /// [Modul 02 - Wrap Widget untuk Fasilitas]:
   Widget _buildFacilitiesSection(DestinationModel item) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -625,7 +943,6 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  /// [Modul 12 - GPS Coordinates Card]:
   Widget _buildGpsMapCard(DestinationModel item) {
     return Container(
       padding: const EdgeInsets.all(16),
@@ -664,7 +981,7 @@ class _DetailPageState extends State<DetailPage> {
                     ),
                   ),
                   Text(
-                    'Terintegrasi Layanan Geolocator',
+                    'Titik Geografis Lokasi Destinasi',
                     style: TextStyle(fontSize: 11, color: textMuted),
                   ),
                 ],
@@ -757,7 +1074,6 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  /// [Modul 04 - Bottom Action Bar dengan Expanded]:
   Widget _buildBottomActionBar(DestinationModel item) {
     return Positioned(
       bottom: 0,
@@ -780,7 +1096,6 @@ class _DetailPageState extends State<DetailPage> {
         ),
         child: Row(
           children: [
-            // Harga Tiket / Biaya Masuk
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
@@ -800,8 +1115,6 @@ class _DetailPageState extends State<DetailPage> {
               ],
             ),
             const SizedBox(width: 20),
-
-            // Tombol CTA Utama "Petunjuk Arah"
             Expanded(
               child: ElevatedButton.icon(
                 onPressed: () {
